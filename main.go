@@ -1,7 +1,7 @@
 package main
 
 import (
-	"example/hello/tcp"
+	"example/hello/internal"
 	"fmt"
 	"log"
 	"net"
@@ -30,8 +30,8 @@ func main() {
 		} else {
 			fmt.Println("Connection accepted from", rwc.RemoteAddr().String())
 		}
-		conn := tcp.NewConn(rwc)
-		go tcp.Serve(conn)
+		conn := internal.NewConn(rwc)
+		go internal.Serve(conn)
 
 	}
 }

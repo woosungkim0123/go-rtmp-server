@@ -1,4 +1,4 @@
-package tcp
+package internal
 
 import (
 	"bytes"
@@ -12,48 +12,90 @@ type Message struct {
 	Payload []byte // 메시지 내용
 }
 
-// ReadMessage는 conn에서 메시지를 읽는 가상의 함수입니다.
-// 실제 구현에서는 RTMP 프로토콜의 메시지 포맷에 맞춰 메시지를 읽어야 합니다.
+func Serve(c *Conn) error {
 
-func Serve(conn *Conn) error {
-	if err := handshake(conn); err != nil {
+	if err := handshake(c); err != nil {
 		log.Printf("Failed to handshake: %+v", err)
 		panic(err)
 	}
 
-	//err := .Create(uint32(0), conn)
-	//if err != nil {
-	//	log.Printf("Failed to create control stream: %+v", err)
-	//	panic(err)
-	//}
+	_, err := c.streams.Create(uint32(ControlStreamID))
 
-	//decoder := amf0.NewDecoder(conn)
-	//for {
-	//	// 메시지 읽기
-	//	var data interface{}
-	//
-	//	// 데이터 디코딩
-	//	if err := decoder.Decode(&data); err != nil {
-	//		// 연결 종료 또는 읽기 에러 처리
-	//		if err == io.EOF {
-	//			log.Printf("Client closed the connection")
-	//			return nil
-	//		}
-	//		log.Printf("Failed to decode AMF0 data: %+v", err)
-	//		return err
-	//	}
-	//
-	//	log.Printf("Decoded AMF0 data: %+v", data)
-	//
-	//	// 읽은 메시지에 대한 간단한 처리
-	//	// 예: 로그 남기기
-	//	//log.Printf("Received message: Type=%s, Payload=%s", msg.Type, string(msg.Payload))
-	//	// 실제 구현에서는 msg.Type에 따라 다양한 처리를 할 수 있습니다.
-	//
-	//	// 여기에 추가적인 메시지 처리 로직을 구현할 수 있습니다.
-	//}
-	return nil
+	if err != nil {
+		log.Printf("Failed to create control stream: %+v", err)
+		panic(err)
+	}
+
+	return c.runHandleMessageLoop()
 }
+
+//// AMF0 메시지를 읽는 곳
+//var commandName string
+//var transactionID float64
+//var obj interface{}
+//
+//commandName, err := amf.ReadString(conn.bReader)
+//if err != nil {
+//	log.Printf("Failed to read command name: %+v", err)
+//	return err
+//}
+//transactionID, err2 := amf.ReadDouble(conn.bReader)
+//if err2 != nil {
+//	log.Printf("Failed to read transaction ID: %+v", err)
+//	return err
+//}
+//
+//// 연결 매개변수 객체 읽기
+//obj, err3 := amf.ReadValue(conn.bReader)
+//if err3 != nil {
+//	log.Printf("Failed to read connection object: %+v", err)
+//	return err
+//}
+
+//fmt.Printf("Received command: %s, TransactionID: %f, Object: %+v\n", commandName, transactionID, obj)
+
+// 여기서 'connect' 요청을 처리한다고 가정합니다...
+
+// 'connect' 요청에 대한 성공 응답을 보냅니다.
+//encoder := amf.(conn) // AMF0 인코더 초기화
+//response := []interface{}{
+//	"_result",
+//	transactionID,
+//	map[string]interface{}{"level": "status", "code": "NetConnection.Connect.Success", "description": "Connection successful."},
+//}
+//for _, v := range response {
+//	if err := encoder.Encode(v); err != nil {
+//		log.Printf("Failed to encode response: %+v", err)
+//		return
+//	}
+//}
+
+// decoder := amf0.NewDecoder(conn)
+//
+//	for {
+//		// 메시지 읽기
+//		var data interface{}
+//
+//		// 데이터 디코딩
+//		if err := decoder.Decode(&data); err != nil {
+//			// 연결 종료 또는 읽기 에러 처리
+//			if err == io.EOF {
+//				log.Printf("Client closed the connection")
+//				return nil
+//			}
+//			log.Printf("Failed to decode AMF0 data: %+v", err)
+//			return err
+//		}
+//
+//		log.Printf("Decoded AMF0 data: %+v", data)
+//
+//		// 읽은 메시지에 대한 간단한 처리
+//		// 예: 로그 남기기
+//		//log.Printf("Received message: Type=%s, Payload=%s", msg.Type, string(msg.Payload))
+//		// 실제 구현에서는 msg.Type에 따라 다양한 처리를 할 수 있습니다.
+//
+//		// 여기에 추가적인 메시지 처리 로직을 구현할 수 있습니다.
+//	}
 func handshake(conn *Conn) error {
 	// 핸드셰이크 C0 읽기
 	// 0x
