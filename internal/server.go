@@ -14,7 +14,7 @@ type Message struct {
 
 func Serve(c *Conn) error {
 
-	if err := handshake(c); err != nil {
+	if err := Handshake1(c); err != nil {
 		log.Printf("Failed to handshake: %+v", err)
 		panic(err)
 	}
@@ -96,7 +96,7 @@ func Serve(c *Conn) error {
 //
 //		// 여기에 추가적인 메시지 처리 로직을 구현할 수 있습니다.
 //	}
-func handshake(conn *Conn) error {
+func Handshake1(conn *Conn) error {
 	// 핸드셰이크 C0 읽기
 	// 0x
 	/**

@@ -76,8 +76,10 @@ func (h *streamHandler) handleCommand(chunkStreamID int, timestamp uint32, cmdMs
 		if err := h.releaseStream(amfDec, &value); err != nil {
 			return err
 		}
-		if
-
+		if err := h.sendReleaseSuccessResponse(); err != nil {
+			return err
+		}
+		break
 	}
 
 	//err := h.handler.onCommand(chunkStreamID, timestamp, cmdMsg, value)
@@ -112,7 +114,8 @@ func (h *streamHandler) sendConnectSuccessResponse() error {
 		return err
 	}
 
-	//defer h.stream.conn.rwc.Close()
+	//h.stream.handler..ChangeState(streamStateServerConnected)
+
 	fmt.Println("Connect success response sent successfully")
 	return nil
 }
@@ -165,31 +168,5 @@ func (h *streamHandler) releaseStream(d *amf0.Decoder, value *message.AMFConvert
 }
 
 func (h *streamHandler) sendReleaseSuccessResponse() error {
-	successMessage := map[string]interface{}{
-		"level":       "status",
-		"code":        "NetConnection.Connect.Success",
-		"description": "Connection succeeded.",
-		"details": map[string]interface{}{
-			"fmsVer":       "GO-RTMP/0,0,0,0",
-			"capabilities": 31,
-		},
-		// AMF0에서는 ECMAArray 대신 map을 사용할 수 있습니다.
-		"information": map[string]interface{}{
-			"type":    "go-rtmp",
-			"version": "master",
-		},
-	}
-
-	// 로그를 통해 응답 내용 출력
-	log.Printf("Connect: ResponseBody = %+v", successMessage)
-	encoder := amf0.NewEncoder(h.stream.conn.rwc)
-
-	if err := encoder.Encode(successMessage); err != nil {
-		log.Printf("Failed to encode and send connect success response: %v", err)
-		return err
-	}
-
-	//defer h.stream.conn.rwc.Close()
-	fmt.Println("Connect success response sent successfully")
 	return nil
 }

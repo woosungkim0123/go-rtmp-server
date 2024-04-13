@@ -51,6 +51,7 @@ func NewChunkStreamer(r io.Reader, w io.Writer) *ChunkStreamer {
 func (cs *ChunkStreamer) Read(cmsg *ChunkMessage) (int, uint32, error) {
 	reader, err := cs.NewChunkReader()
 	if err != nil {
+		log.Printf("Failed to read chunk: %+v", err)
 		return 0, 0, err
 	}
 
@@ -68,6 +69,7 @@ func (cs *ChunkStreamer) NewChunkReader() (*ChunkStreamReader, error) {
 again:
 	reader, err := cs.readChunk()
 	if err != nil {
+		log.Printf("Failed to read chunk: %+v", err)
 		return nil, err
 	}
 
@@ -80,6 +82,7 @@ again:
 func (cs *ChunkStreamer) readChunk() (*ChunkStreamReader, error) {
 	var bh chunkBasicHeader
 	if err := decodeChunkBasicHeader(cs.r, cs.cacheBuffer, &bh); err != nil {
+		log.Printf("Failed to read basic header: %+v", err)
 		return nil, err
 	}
 	//cs.logger.Debugf("(READ) BasicHeader = %+v", bh)
@@ -155,6 +158,7 @@ func decodeChunkBasicHeader(r io.Reader, buf []byte, bh *chunkBasicHeader) error
 	}
 
 	if _, err := io.ReadAtLeast(r, buf[:1], 1); err != nil {
+		log.Printf("Failed to read basic header: %+v", err)
 		return err
 	}
 
