@@ -15,19 +15,20 @@ func NewHandshake(conn *Conn) *Handshake {
 	return &Handshake{rwc: conn.rwc}
 }
 
-// C0 reads the first byte of the RTMP handshake
-func (h *Handshake) C0() error {
+// C0 RTMP 핸드셰이크의 첫 번째 바이트를 읽습니다.
+// 이 바이트는 0x03이며, RTMP 프로토콜의 버전 3을 나타냅니다.
+func (h *Handshake) C0() (err error) {
 	version := make([]byte, 1)
-	if _, err := h.rwc.Read(version); err != nil {
+	if _, err = h.rwc.Read(version); err != nil {
 		log.Printf("Failed to read C0: %+v", err)
-		return err
+		return
 	}
 	log.Printf("Reading C0 version %v", version[0])
-	return nil
+	return
 }
 
-// S0
-// 0x03 =
+// S0 RTMP 핸드셰이크의 첫 번째 바이트를 씁니다.
+// 이 바이트는 0x03이며, RTMP 프로토콜의 버전 3을 나타냅니다.
 func (h *Handshake) S0() error {
 	version := []byte{0x03}
 	if _, err := h.rwc.Write(version); err != nil {

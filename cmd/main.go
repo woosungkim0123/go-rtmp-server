@@ -10,6 +10,8 @@ func main() {
 	InitServer()
 }
 
+// InitServer RTMP 서버를 초기화하고 시작하는 함수입니다.
+// RTMP 서버는 TCP 포트 1935에서 리스닝을 시작합니다.
 func InitServer() {
 	listener, err := net.Listen("tcp", ":1935")
 	if err != nil {
@@ -26,26 +28,17 @@ func InitServer() {
 			log.Printf("Unable to accept connection %s", err.Error())
 			continue
 		}
-		rtmpConnection := connect.NewConnection(conn, ctx)
+		connection := connect.NewConnection(conn, ctx)
 
-		go rtmpConnection.Serve()
+		go connection.Serve()
 	}
 }
 
+// initStreamContext 스트리밍에 필요한 전역 상태를 관리하는 컨텍스트를 초기화합니다.
+// 세션 관리를 위한 map, 미리보기 채널을 초기화합니다.
 func initStreamContext() (ctx *connect.StreamContext) {
 	ctx = &connect.StreamContext{}
 	ctx.Sessions = make(map[string]*connect.Connection)
 	ctx.Preview = make(chan string)
 	return
-}
-
-// Connect 성공 메시지를 클라이언트로 보내는 함수
-func sendConnectSuccessMessage(conn net.Conn) error {
-	// "NetConnection.Connect.Success" 메시지를 생성하여 클라이언트로 보냄
-	_, err := conn.Write([]byte("NetConnection.Connect.Success"))
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
