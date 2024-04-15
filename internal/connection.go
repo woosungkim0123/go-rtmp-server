@@ -1,8 +1,9 @@
-package connect
+package internal
 
 import (
 	"bufio"
 	"encoding/binary"
+	"example/hello/internal/handshake"
 	"example/hello/internal/util/endian"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ type Connection struct {
 }
 
 type ConnectionStatus struct {
+	HandShakeDone  bool
 	ConnectionDone bool
 	GotMessage     bool
 }
@@ -40,21 +42,37 @@ func NewConnection(conn net.Conn, ctx *StreamContext) *Connection {
 		ReadMaxChunkSize:  128,
 		WriteMaxChunkSize: 4096,
 		Context:           ctx,
+		ConnectionStatus:  &ConnectionStatus{},
 	}
 }
 
-func (c *Connection) Serve() {
+func (c *Connection) Serve() (err error) {
+	if err = c.handshake(); err != nil {
+		return
+	}
 
-	c.handshake()
-	err := c.streamSetup()
+	err = c.streamSetup()
 	if err != nil {
 		return
 	}
+	return
+}
+
+func (c *Connection) handshake() (err error) {
+	err = handshake.NewHandShake(c.Conn).Handshake()
+	if err != nil {
+		log.Printf("Handshake failed: %s", err.Error())
+		return
+	}
+	c.ConnectionStatus.HandShakeDone = true
+	return
 }
 
 func (c *Connection) streamSetup() (err error) {
 	for {
-		c.readMessage()
+		if err = c.readMessage(); err != nil {
+			return
+		}
 		if c.ConnectionStatus.ConnectionDone {
 			return
 		}

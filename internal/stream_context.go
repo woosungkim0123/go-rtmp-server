@@ -1,4 +1,4 @@
-package connect
+package internal
 
 type StreamContext struct {
 	Sessions map[string]*Connection

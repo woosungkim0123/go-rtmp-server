@@ -1,4 +1,4 @@
-package connect
+package internal
 
 type rtmpChunk struct {
 	header   *chunkHeader
