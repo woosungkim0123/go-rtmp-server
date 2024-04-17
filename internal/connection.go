@@ -3,6 +3,7 @@ package internal
 import (
 	"bufio"
 	"encoding/binary"
+	"example/hello/internal/amf"
 	"example/hello/internal/handshake"
 	"example/hello/internal/util/endian"
 	"fmt"
@@ -36,10 +37,10 @@ func NewConnection(conn net.Conn, ctx *StreamContext) *Connection {
 		Conn:              conn,
 		Reader:            bufio.NewReader(conn),
 		Writer:            bufio.NewWriter(conn),
-		ReadBuffer:        make([]byte, 5096),
+		ReadBuffer:        make([]byte, 5096), // 일반적인 패킷 크기는 1500이지만 5KB 크기의 버퍼로 설정함으로써 I/O 호출을 줄이고 성능을 향상 시킬 수 있습니다.
 		WriteBuffer:       make([]byte, 5096),
 		csMap:             make(map[uint32]*rtmpChunk),
-		ReadMaxChunkSize:  128,
+		ReadMaxChunkSize:  128, // 실시간 스트리밍을 위해 작은 청크 크기를 사용하여 지연을 최소화함으로써 빠른 데이터 처리 및 전송을 가능하게 하고, 최적의 사용자 경험을 제공합니다.
 		WriteMaxChunkSize: 4096,
 		Context:           ctx,
 		ConnectionStatus:  &ConnectionStatus{},
@@ -122,32 +123,15 @@ func (c *Connection) readChunk() (err error) {
 		bytesRead += 2
 	}
 
-	// TODO 여기까지함
-	// csMap은 각 청크 스트림 ID에 대한 마지막 청크의 상태를 저장하는데 사용
-	// 스트림의 연속성 유지: 스트리밍 데이터는 연속된 청크들로 전송됩니다. 각 청크는 이전 청크의 데이터에 이어지므로, 각 스트림의 마지막 상태를 저장하는 것이 중요합니다. 이를 통해 데이터가 순차적으로 올바르게 처리될 수 있습니다.
-	// 스트림 관리의 효율성: 서버는 여러 csID에 대해 동시에 여러 데이터 스트림을 처리할 수 있어야 합니다. 이를 위해 각 스트림의 최신 상태를 저장하고 빠르게 접근할 수 있도록 관리하는 것이 필요합니다.
-	// 오류 및 재연결 처리: 네트워크 오류나 다른 이유로 연결이 끊겼다가 재연결되는 경우, 마지막으로 처리된 청크의 상태를 기반으로 스트림을 재개할 수 있습니다.
+	// csMap 은 각 청크 스트림 ID에 대한 마지막 청크의 상태를 저장하는데 사용
 	chunk, ok := c.csMap[csID]
 	if !ok {
 		log.Printf("New Chunk %d", csID)
 		chunk = c.createRtmpChunk(_fmt, csID)
 	}
 
-	/*
-		if fmt is 2, then message header is 3 bytes long, has only timestamp delta 이전 청크의 타임스탬프와 현재 청크의 타임스탬프 사이의 차이를 나타냅니다. 즉, 이전 청크 이후 얼마나 많은 시간이 지났는지를 밀리세컨드 단위로 표현합니다.
-		if fmt is 1, then message header is 7 bytes long, has timestamp delta, message length, message type id
-		if fmt is 0, then message header is 11 bytes long, has absolute timestamp, message length, message type id, message stream id
-	*/
-
-	/*
-		timestamp - 		 		3 bytes
-		message length - 		3 byte
-		message type id- 		1 byte
-		message stream id-	4 bytes, little endian
-
-	*/
-
-	// 3바이트 timeStamp
+	// timestamp - 3 bytes
+	// fmt 0 - absolute timestamp, fmt 1, 2 - timestamp delta
 	if _fmt <= 2 {
 		if _, err = io.ReadFull(c.Reader, c.ReadBuffer[bytesRead:bytesRead+3]); err != nil {
 			return
@@ -156,6 +140,7 @@ func (c *Connection) readChunk() (err error) {
 		bytesRead += 3
 	}
 
+	// message length - 3 bytes, message type ID - 1 byte
 	if _fmt <= 1 {
 		if _, err = io.ReadFull(c.Reader, c.ReadBuffer[bytesRead:bytesRead+4]); err != nil {
 			return
@@ -165,7 +150,7 @@ func (c *Connection) readChunk() (err error) {
 		bytesRead += 4
 	}
 
-	// TODO 왜 LITTLE EDNDIAN을 썻는가?
+	// message stream ID - 4 bytes, little endian
 	if _fmt == 0 {
 		if _, err = io.ReadFull(c.Reader, c.ReadBuffer[bytesRead:bytesRead+4]); err != nil {
 			return
@@ -173,8 +158,8 @@ func (c *Connection) readChunk() (err error) {
 		chunk.header.messageStreamID = binary.LittleEndian.Uint32(c.ReadBuffer[bytesRead : bytesRead+4])
 		bytesRead += 4
 	}
-	// chunk timestamp 처리를위한 로직
-	// timestamp가 다차면 0xFFFFFF로 표시되고, 4바이트 추가로 읽어들여야 함.
+
+	// timestamp가 다차면 0xFFFFFF로 표시되고, 4바이트 추가로 읽습니다.
 	if chunk.header.timestamp == 0xFFFFFF {
 		chunk.header.hasExtendedTimestamp = true
 		if _, err = io.ReadFull(c.Reader, c.ReadBuffer[bytesRead:bytesRead+4]); err != nil {
@@ -187,27 +172,29 @@ func (c *Connection) readChunk() (err error) {
 		chunk.header.hasExtendedTimestamp = false
 	}
 
-	// MESSAGEtype20이 들어오면 AMF0 Encoded Command message
-	chunk.delta = chunk.header.timestamp
-	chunk.clock += chunk.header.timestamp
+	chunk.delta = chunk.header.timestamp  // chunk 간 시간 간격
+	chunk.clock += chunk.header.timestamp // stream 내에서 현재까지의 총 진행 시간
+	log.Printf("delta timestamp: %d, clock: %d", chunk.delta, chunk.clock)
 
-	// payload, capacity 초기화
+	// 첫 번째 데이터를 읽을 때 payload를 초기화합니다.
 	if chunk.bytes == 0 {
 		chunk.payload = make([]byte, chunk.header.length)
 		chunk.capacity = chunk.header.length
 	}
 
-	// 청크 데이터 전체길이, chunk.bytes는 현재까지 읽은 바이트 수
+	// 총 읽어야할 데이터량 - 현재까지 읽은 데이터량
+	// 만약 읽어야할 데이터량이 한번에 읽을 수 있는 최대 읽기 크기보다 크다면 최대 읽기 크기로 설정합니다.
 	size := int(chunk.header.length) - chunk.bytes
+	log.Printf("chunk length: %d, bytes: %d, size: %d", chunk.header.length, chunk.bytes, size)
 	if size > c.ReadMaxChunkSize {
 		size = c.ReadMaxChunkSize
 	}
-	// 4096 시스템이 한번에 처리할수있는 최대 크기 (4KB)
-	n, err := io.ReadFull(c.Reader, c.ReadBuffer[bytesRead:bytesRead+size])
-	if err != nil {
-		return
-	}
-	chunk.payload = append(chunk.payload[:chunk.bytes], c.ReadBuffer[bytesRead:bytesRead+size]...)
+	log.Printf("size: %d", size)
+
+	var n int
+	n, err = io.ReadFull(c.Reader, c.ReadBuffer[bytesRead:bytesRead+size])
+
+	chunk.payload = append(chunk.payload[:chunk.bytes], c.ReadBuffer[bytesRead:bytesRead+size]...) // ...는 슬라이스의 요소를 개별적으로 풀어서 append 함수의 인자로 넘깁니다.
 	chunk.bytes += n
 	bytesRead += n
 
@@ -238,14 +225,14 @@ func (c *Connection) handleChunk(chunk *rtmpChunk) {
 	switch chunk.header.messageType {
 
 	case 1: // Set Max Read Chunk Size
-		c.ReadMaxChunkSize = int(binary.BigEndian.Uint32(chunk.payload))
+		c.ReadMaxChunkSize = int(binary.BigEndian.Uint32(chunk.payload)) // 4096
 
 	case 5:
 		// Window ACK Size
 
 	// AMF0 Command
-	//case 20:
-	//	c.handleAmf0Commands(chunk)
+	case 20:
+		c.handleAmf0Commands(chunk)
 	//
 	//case 18:
 	//	c.handleDataMessages(chunk)
@@ -260,5 +247,37 @@ func (c *Connection) handleChunk(chunk *rtmpChunk) {
 		fmt.Println("UNKNOWN CHUNK RECEIVED", chunk.header.messageType)
 		fmt.Println(chunk.header.fmt, chunk.header.csID, chunk.header.hasExtendedTimestamp, chunk.header.length, chunk.header.messageStreamID, chunk.header.messageType, chunk.header.timestamp)
 		// panic(chunk.header.messageStreamID)
+	}
+}
+
+func (c *Connection) handleAmf0Commands(chunk *rtmpChunk) {
+	command := amf.Decode(chunk.payload)
+
+	switch command["cmd"] {
+	case "connect":
+		//c.onConnect(command)
+	case "releaseStream":
+		//c.onRelease(command)
+	case "FCPublish":
+		//c.onFCPublish(command)
+	case "createStream":
+		//c.onCreateStream(command)
+	case "publish":
+		//c.onPublish(command, chunk.header.messageStreamID)
+	case "play":
+		//c.onPlay(command, chunk)
+	case "pause":
+		fmt.Println("Pause")
+	case "FCUnpublish":
+	case "deleteStream":
+		fmt.Println("Delete Stream")
+	case "closeStream":
+		fmt.Println("Close Stream")
+	case "receiveAudio":
+		fmt.Println("Receive Audio")
+	case "receiveVideo":
+		fmt.Println("Receive Video")
+	default:
+		fmt.Println("UNKNOWN AMF COMMAND RECEIVED")
 	}
 }
