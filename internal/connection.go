@@ -227,11 +227,10 @@ func (c *Connection) handleChunk(chunk *rtmpChunk) {
 	case 1: // Set Max Read Chunk Size
 		c.ReadMaxChunkSize = int(binary.BigEndian.Uint32(chunk.payload)) // 4096
 
-	case 5:
-		// Window ACK Size
+	//case 5:
+	// Window ACK Size
 
-	// AMF0 Command
-	case 20:
+	case 20: // AMF0 Command
 		c.handleAmf0Commands(chunk)
 	//
 	//case 18:
