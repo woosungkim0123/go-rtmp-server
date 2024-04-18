@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"example/hello/internal/amf"
+	"example/hello/internal/format/flvio"
 	"example/hello/internal/handshake"
 	"example/hello/internal/util/endian"
 	"fmt"
@@ -22,6 +23,8 @@ type Connection struct {
 	ReadMaxChunkSize  int
 	WriteMaxChunkSize int
 	Context           *StreamContext
+
+	AppName string
 
 	ConnectionStatus *ConnectionStatus
 }
@@ -254,7 +257,7 @@ func (c *Connection) handleAmf0Commands(chunk *rtmpChunk) {
 
 	switch command["cmd"] {
 	case "connect":
-		//c.onConnect(command)
+		c.onConnect(command)
 	case "releaseStream":
 		//c.onRelease(command)
 	case "FCPublish":
@@ -279,4 +282,55 @@ func (c *Connection) handleAmf0Commands(chunk *rtmpChunk) {
 	default:
 		fmt.Println("UNKNOWN AMF COMMAND RECEIVED")
 	}
+}
+
+func (c *Connection) onConnect(connectCommand map[string]interface{}) {
+	log.Printf("Connect Command: %v", connectCommand)
+
+	c.AppName = connectCommand["cmdObj"].(map[string]interface{})["app"].(string)
+	c.setMaxWriteChunkSize(128)
+	c.sendWindowACK(5000000) // 윈도우 크기는 서버가 클라이언트로부터 얼마나 많은 데이터를 받아들일 수 있는지를 정하는 한계 값입니다. 서버가 클라이언트로부터 데이터를 받아들이는 속도를 조절하는데 사용됩니다. (5MB)
+
+	// 대역폭은 네트워크에서 사용 가능한 최대 전송 속도를 나타냅니다.
+	// RTMP 경우, 대역폭 설정은 클라이언트와 서버 간의 통신을 최적화하고 스트리밍의 품질과 안정성을 유지하기 위해 중요합니다.
+	// 대역폭 값인 5000000은 5000000 바이트/초 또는 약 5 Mbps를 나타내고, 일반적으로 고화질 또는 고속 스트리밍에 적합한 대역폭 수준입니다.
+	// 필요한 대역폭이나 최적의 값은 특정 상황에 따라 다를 수 있으므로, 실제 테스트 및 성능 모니터링을 통해 적절한 값을 결정하는 것이 중요합니다.
+	c.setPeerBandwidth(5000000, 2)
+	c.Writer.Flush()
+
+	cmd := "_result"
+	transID := connectCommand["transId"]
+	cmdObj := flvio.AMFMap{
+		"fmsVer":       "FMS/3,0,1,123",
+		"capabilities": 31,
+	}
+	info := flvio.AMFMap{
+		"level":          "status",
+		"code":           "NetConnection.Connect.Success",
+		"description":    "Connection succeeded",
+		"objectEncoding": 0,
+	}
+	amfPayload, length := amf.Encode(cmd, transID, cmdObj, info)
+
+	chunk := &rtmpChunk{
+		header: &chunkHeader{
+			fmt:             0,
+			csID:            3,
+			messageType:     20,
+			messageStreamID: 0,
+			timestamp:       0,
+			length:          uint32(length),
+		},
+		clock:    0,
+		delta:    0,
+		capacity: 0,
+		bytes:    0,
+		payload:  amfPayload,
+	}
+	for _, ch := range c.create(chunk) {
+		c.Writer.Write(ch)
+	}
+	c.Writer.Flush()
+
+	c.ConnectionStatus.ConnectionDone = true
 }

@@ -86,10 +86,10 @@ func decodeBool(data []byte) DecodedData {
 
 // decodeString 첫 2바이트는 문자열의 길이를 나타내며, 이어지는 문자열은 UTF-8로 인코딩됩니다.
 func decodeString(data []byte) DecodedData {
-	len := binary.BigEndian.Uint16(data[:2])
+	len := binary.BigEndian.Uint16(data[:2]) // 문자열 길이
 	return DecodedData{
 		remainingData: data[2+len:],
-		value:         string(data[2 : 2+len]),
+		value:         string(data[2 : 2+len]), // 아스키 코드로 변환
 	}
 }
 
