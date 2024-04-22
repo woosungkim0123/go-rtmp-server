@@ -22,6 +22,8 @@ func InitServer() {
 
 	ctx := initStreamContext()
 
+	go internal.InitPreviewServer(ctx)
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {

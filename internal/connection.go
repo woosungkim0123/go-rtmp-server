@@ -24,8 +24,9 @@ type Connection struct {
 	WriteMaxChunkSize int
 	Context           *StreamContext
 
-	Streams int
-	AppName string
+	Streams   int
+	AppName   string
+	StreamKey string
 
 	ConnectionStatus *ConnectionStatus
 }
@@ -247,9 +248,6 @@ func (c *Connection) handleChunk(chunk *rtmpChunk) {
 	case 1: // Set Max Read Chunk Size
 		c.ReadMaxChunkSize = int(binary.BigEndian.Uint32(chunk.payload)) // 4096
 
-	//case 5:
-	// Window ACK Size
-
 	case 20: // AMF0 Command
 		c.handleAmf0Commands(chunk)
 	//
@@ -282,7 +280,7 @@ func (c *Connection) handleAmf0Commands(chunk *rtmpChunk) {
 	case "createStream":
 		c.onCreateStream(command)
 	case "publish":
-		//c.onPublish(command, chunk.header.messageStreamID)
+		c.onPublish(command, chunk.header.messageStreamID)
 	case "play":
 		//c.onPlay(command, chunk)
 	case "pause":
@@ -391,4 +389,52 @@ func (c *Connection) onCreateStream(command map[string]interface{}) {
 		c.Writer.Write(ch)
 	}
 	c.Writer.Flush()
+}
+
+func (c *Connection) onPublish(command map[string]interface{}, messageStreamID uint32) {
+	fmt.Println("On Publish", command)
+	cmd := "onStatus"
+	transID := 0
+	cmdObj := interface{}(nil)
+	info := flvio.AMFMap{
+		"level":       "status",
+		"code":        "NetStream.Publish.Start",
+		"description": "Published",
+	}
+
+	amfPayload, length := amf.Encode(cmd, transID, cmdObj, info)
+
+	chunk := &rtmpChunk{
+		header: &chunkHeader{
+			fmt:             0,
+			csID:            3,
+			messageType:     20,
+			messageStreamID: messageStreamID,
+			timestamp:       0,
+			length:          uint32(length),
+		},
+		clock:    0,
+		delta:    0,
+		capacity: 0,
+		bytes:    0,
+		payload:  amfPayload,
+	}
+
+	c.Context.set(command["streamName"].(string), c) // 서버세션에 저장
+	c.StreamKey = command["streamName"].(string)     // 스트림키 저장
+
+	// Get User 요청 - RPC 사용
+	// 응답을 바탕으로 redis
+
+	// 작은 서비스는 여기서 유저들에게 연결하여 바로전송하는방식을 택함
+	// redis에 유저ID와 StreamID 저장 (예: redis 사용)
+
+	c.Context.Preview <- c.StreamKey
+
+	for _, ch := range c.create(chunk) {
+		c.Writer.Write(ch)
+	}
+	c.Writer.Flush()
+
+	c.ConnectionStatus.ConnectionComplete = true
 }
