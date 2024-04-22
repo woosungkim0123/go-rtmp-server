@@ -56,7 +56,7 @@ func (c *Connection) createRtmpChunk(fmt uint8, csID uint32) *rtmpChunk {
 	return chunk
 }
 
-func (c Connection) create(chunk *rtmpChunk) [][]byte {
+func (c *Connection) create(chunk *rtmpChunk) [][]byte {
 	basicHeader := chunk.createBasicHeader()
 	messageHeader := chunk.createMessageHeader()
 	extendedTimestamp := chunk.createExtendedTimestamp()
@@ -130,7 +130,7 @@ func (chunk *rtmpChunk) createMessageHeader() []byte {
 	return res
 }
 
-func (chunk rtmpChunk) createExtendedTimestamp() []byte {
+func (chunk *rtmpChunk) createExtendedTimestamp() []byte {
 	if chunk.header.hasExtendedTimestamp {
 		res := make([]byte, 4)
 		binary.BigEndian.PutUint32(res, chunk.header.timestamp)
@@ -139,7 +139,7 @@ func (chunk rtmpChunk) createExtendedTimestamp() []byte {
 	return make([]byte, 0)
 }
 
-func (chunk rtmpChunk) createPayloadArray(c Connection) [][]byte {
+func (chunk *rtmpChunk) createPayloadArray(c *Connection) [][]byte {
 	totalChunks := int(math.Ceil(float64(float64(chunk.header.length) / float64(c.WriteMaxChunkSize))))
 	if totalChunks == 0 {
 		totalChunks = 1

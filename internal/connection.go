@@ -24,15 +24,17 @@ type Connection struct {
 	WriteMaxChunkSize int
 	Context           *StreamContext
 
+	Streams int
 	AppName string
 
 	ConnectionStatus *ConnectionStatus
 }
 
 type ConnectionStatus struct {
-	HandShakeDone  bool
-	ConnectionDone bool
-	GotMessage     bool
+	HandShakeDone         bool
+	ConnectionPrepareDone bool
+	ConnectionComplete    bool
+	GotMessage            bool
 }
 
 func NewConnection(conn net.Conn, ctx *StreamContext) *Connection {
@@ -55,10 +57,14 @@ func (c *Connection) Serve() (err error) {
 		return
 	}
 
-	err = c.streamSetup()
-	if err != nil {
+	if err = c.prepareConnection(); err != nil {
 		return
 	}
+
+	if err = c.completeConnection(); err != nil {
+		return
+	}
+
 	return
 }
 
@@ -72,12 +78,23 @@ func (c *Connection) handshake() (err error) {
 	return
 }
 
-func (c *Connection) streamSetup() (err error) {
+func (c *Connection) prepareConnection() (err error) {
 	for {
 		if err = c.readMessage(); err != nil {
 			return
 		}
-		if c.ConnectionStatus.ConnectionDone {
+		if c.ConnectionStatus.ConnectionPrepareDone {
+			return
+		}
+	}
+}
+
+func (c *Connection) completeConnection() (err error) {
+	for {
+		if err = c.readMessage(); err != nil {
+			return
+		}
+		if c.ConnectionStatus.ConnectionComplete {
 			return
 		}
 	}
@@ -87,7 +104,7 @@ func (c *Connection) readMessage() (err error) {
 	c.ConnectionStatus.GotMessage = false
 	for {
 		if err = c.readChunk(); err != nil {
-			fmt.Println("Error while reading message")
+			log.Printf("Error while reading message: %s", err.Error())
 			return
 		}
 		if c.ConnectionStatus.GotMessage {
@@ -259,11 +276,11 @@ func (c *Connection) handleAmf0Commands(chunk *rtmpChunk) {
 	case "connect":
 		c.onConnect(command)
 	case "releaseStream":
-		//c.onRelease(command)
+		c.onRelease(command)
 	case "FCPublish":
-		//c.onFCPublish(command)
+		c.onFCPublish(command)
 	case "createStream":
-		//c.onCreateStream(command)
+		c.onCreateStream(command)
 	case "publish":
 		//c.onPublish(command, chunk.header.messageStreamID)
 	case "play":
@@ -332,5 +349,46 @@ func (c *Connection) onConnect(connectCommand map[string]interface{}) {
 	}
 	c.Writer.Flush()
 
-	c.ConnectionStatus.ConnectionDone = true
+	c.ConnectionStatus.ConnectionPrepareDone = true
+}
+
+func (c *Connection) onRelease(command map[string]interface{}) {
+	log.Printf("on Release Command: %v", command)
+}
+
+func (c *Connection) onFCPublish(command map[string]interface{}) {
+	log.Printf("on FCPublish Command: %v", command)
+}
+
+func (c *Connection) onCreateStream(command map[string]interface{}) {
+	log.Printf("on CreateStream Command: %v", command)
+	c.Streams++ // 고유 번호
+
+	cmd := "_result"
+	transID := command["transId"]
+	cmdObj := interface{}(nil)
+	info := c.Streams
+
+	amfPayload, length := amf.Encode(cmd, transID, cmdObj, info)
+
+	chunk := &rtmpChunk{
+		header: &chunkHeader{
+			fmt:             0,
+			csID:            3,
+			messageType:     20,
+			messageStreamID: 0,
+			timestamp:       0,
+			length:          uint32(length),
+		},
+		clock:    0,
+		delta:    0,
+		capacity: 0,
+		bytes:    0,
+		payload:  amfPayload,
+	}
+
+	for _, ch := range c.create(chunk) {
+		c.Writer.Write(ch)
+	}
+	c.Writer.Flush()
 }
