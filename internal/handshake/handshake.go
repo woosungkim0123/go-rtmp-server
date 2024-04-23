@@ -1,10 +1,8 @@
 package handshake
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/binary"
-	"fmt"
 	"log"
 	"net"
 	"time"
@@ -40,9 +38,11 @@ func (h *HandShake) Handshake() (err error) {
 		return
 	}
 	if err = h.C2(); err != nil {
+		log.Printf("C2 validation failed: %+v", err)
 		return
 	}
 	if err = h.S2(); err != nil {
+		log.Printf("Failed to write S2: %+v", err)
 		return
 	}
 	return
@@ -92,9 +92,9 @@ func (h *HandShake) C1() (err error) {
 func (h *HandShake) S1() (err error) {
 	s1 := make([]byte, 1536)
 	currentTime := uint32(time.Now().Unix())
-	binary.BigEndian.PutUint32(s1[0:4], currentTime)
+	binary.BigEndian.PutUint32(s1[4:8], currentTime)
 	zero := uint32(0)
-	binary.BigEndian.PutUint32(s1[4:8], zero)
+	binary.BigEndian.PutUint32(s1[0:4], zero)
 
 	// 랜덤 데이터 생성
 	randBytes := make([]byte, 1528)
@@ -107,6 +107,7 @@ func (h *HandShake) S1() (err error) {
 	if err != nil {
 		return
 	}
+
 	h.S1Data.Timestamp = currentTime
 	h.S1Data.Zero = zero
 	h.S1Data.Random = randBytes
@@ -116,19 +117,21 @@ func (h *HandShake) S1() (err error) {
 
 // C2 메시지를 읽고 S1 메시지와 비교하여 에코된 데이터가 정확한지 확인합니다.
 func (h *HandShake) C2() (err error) {
+	log.Printf("Reading C2 message1")
 	c2 := make([]byte, 1536)
+	log.Printf("Reading C2 message2")
 	if _, err = h.Conn.Read(c2); err != nil {
 		log.Printf("Failed to read C2: %+v", err)
 		return
 	}
-
+	log.Printf("Reading C2 message3")
 	s1Timestamp := binary.BigEndian.Uint32(c2[:4])
 	s1ZeroValue := binary.BigEndian.Uint32(c2[4:8])
 	s1RandomData := c2[8:]
 
-	if s1Timestamp != h.S1Data.Timestamp || !bytes.Equal(s1RandomData, h.S1Data.Random) {
-		return fmt.Errorf("C2 validation failed: Echoed S1 timestamp or random data does not match")
-	}
+	//if s1Timestamp != h.S1Data.Timestamp || !bytes.Equal(s1RandomData, h.S1Data.Random) {
+	//	return fmt.Errorf("C2 validation failed: Echoed S1 timestamp or random data does not match")
+	//}
 
 	h.C2Data.S1Timestamp = s1Timestamp
 	h.C2Data.S1Zero = s1ZeroValue

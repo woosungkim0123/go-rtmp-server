@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"example/hello/internal/amf"
 	"example/hello/internal/format/flvio"
-	"example/hello/internal/handshake"
 	"example/hello/internal/util/endian"
 	"fmt"
 	"io"
@@ -24,9 +23,16 @@ type Connection struct {
 	WriteMaxChunkSize int
 	Context           *StreamContext
 
-	Streams   int
-	AppName   string
-	StreamKey string
+	Streams       int
+	AppName       string
+	StreamKey     string
+	MetaData      []byte
+	GotFirstAudio bool
+	GotFirstVideo bool
+
+	FirstAudio []byte
+	FirstVideo []byte
+	GOP        [][]byte
 
 	ConnectionStatus *ConnectionStatus
 }
@@ -66,18 +72,82 @@ func (c *Connection) Serve() (err error) {
 		return
 	}
 
+	if err = c.a(); err != nil {
+		log.Printf("Error while reading message: %s", err.Error())
+		return
+	}
+
 	return
 }
-
 func (c *Connection) handshake() (err error) {
-	err = handshake.NewHandShake(c.Conn).Handshake()
+	var random [(1 + 1536 + 1536) * 2]byte
+
+	var C0C1C2 = random[:(1 + 1536 + 1536)]
+	var C0 = C0C1C2[:1]
+	var C1 = C0C1C2[1 : 1536+1]
+	var C0C1 = C0C1C2[:1536+1]
+	var C2 = C0C1C2[1+1536:]
+
+	var S0S1S2 = random[(1 + 1536 + 1536):]
+	var S0 = S0S1S2[:1]
+	var S1 = S0S1S2[1 : 1536+1]
+	var S2 = S0S1S2[1+1536:]
+
+	_, err = io.ReadFull(c.Reader, C0C1)
 	if err != nil {
-		log.Printf("Handshake failed: %s", err.Error())
+		fmt.Printf("Error while reading C0C1 %s", err.Error())
+		return
+	}
+
+	if C0[0] != 3 {
+		fmt.Printf("Unsupported RTMP version %d", C0[0])
+		return
+	}
+	fmt.Printf("Client requesting version %d\n", C0[0])
+
+	clientTime := binary.BigEndian.Uint32(C1[:4])
+	// serverTime := clientTime
+	clientVersion := binary.BigEndian.Uint32(C1[4:8])
+	// serverVersion := uint32(0x0d0e0a0d)
+
+	fmt.Println("Time", clientTime)
+	fmt.Println("Flash Version", binary.BigEndian.Uint32(C1[4:8]))
+
+	// S0[0] = 3
+	if clientVersion != 0 {
+		// Complex handshake
+	} else {
+		copy(S0, C0)
+		copy(S1, C1)
+		copy(S2, C2)
+	}
+
+	_, err = c.Writer.Write(S0S1S2)
+	if err != nil {
+		fmt.Printf("Error writing S0S1S2 %s\n", err.Error())
+		return
+	}
+	if err = c.Writer.Flush(); err != nil {
+		fmt.Println("Error flushing S0S1S2")
+	}
+
+	if _, err = io.ReadFull(c.Reader, C2); err != nil {
+		fmt.Printf("Error reading C2 %s", err.Error())
 		return
 	}
 	c.ConnectionStatus.HandShakeDone = true
 	return
 }
+
+//func (c *Connection) handshake() (err error) {
+//	err = handshake.NewHandShake(c.Conn).Handshake()
+//	if err != nil {
+//		log.Printf("Handshake failed: %s", err.Error())
+//		return
+//	}
+//	c.ConnectionStatus.HandShakeDone = true
+//	return
+//}
 
 func (c *Connection) prepareConnection() (err error) {
 	for {
@@ -96,6 +166,15 @@ func (c *Connection) completeConnection() (err error) {
 			return
 		}
 		if c.ConnectionStatus.ConnectionComplete {
+			return
+		}
+	}
+}
+
+func (c *Connection) a() (err error) {
+	for {
+		if err = c.readMessage(); err != nil {
+			log.Printf("Error while reading message: %s", err.Error())
 			return
 		}
 	}
@@ -195,7 +274,7 @@ func (c *Connection) readChunk() (err error) {
 
 	chunk.delta = chunk.header.timestamp  // chunk 간 시간 간격
 	chunk.clock += chunk.header.timestamp // stream 내에서 현재까지의 총 진행 시간
-	log.Printf("delta timestamp: %d, clock: %d", chunk.delta, chunk.clock)
+	//log.Printf("delta timestamp: %d, clock: %d", chunk.delta, chunk.clock)
 
 	// 첫 번째 데이터를 읽을 때 payload를 초기화합니다.
 	if chunk.bytes == 0 {
@@ -206,11 +285,11 @@ func (c *Connection) readChunk() (err error) {
 	// 총 읽어야할 데이터량 - 현재까지 읽은 데이터량
 	// 만약 읽어야할 데이터량이 한번에 읽을 수 있는 최대 읽기 크기보다 크다면 최대 읽기 크기로 설정합니다.
 	size := int(chunk.header.length) - chunk.bytes
-	log.Printf("chunk length: %d, bytes: %d, size: %d", chunk.header.length, chunk.bytes, size)
+	//log.Printf("chunk length: %d, bytes: %d, size: %d", chunk.header.length, chunk.bytes, size)
 	if size > c.ReadMaxChunkSize {
 		size = c.ReadMaxChunkSize
 	}
-	log.Printf("size: %d", size)
+	//log.Printf("size: %d", size)
 
 	var n int
 	n, err = io.ReadFull(c.Reader, c.ReadBuffer[bytesRead:bytesRead+size])
@@ -219,24 +298,12 @@ func (c *Connection) readChunk() (err error) {
 	chunk.bytes += n
 	bytesRead += n
 
-	//if c.Stage == commandStageDone {
-	//	temp := make([]byte, bytesRead)
-	//	copy(temp, c.ReadBuffer[:bytesRead])
-	//	if c.GotFirstAudio && c.GotFirstVideo {
-	//		// c.GOP = append(c.GOP, temp)
-	//	}
-	//	for _, client := range c.Clients {
-	//		client.Send <- temp
-	//	}
-	//}
-
 	// 모든 데이터를 읽었을 때
 	if chunk.bytes == int(chunk.header.length) {
 		c.ConnectionStatus.GotMessage = true
 		chunk.bytes = 0
 		c.handleChunk(chunk)
 	}
-
 	c.csMap[chunk.header.csID] = chunk
 	bytesRead = 0
 	return
@@ -247,18 +314,22 @@ func (c *Connection) handleChunk(chunk *rtmpChunk) {
 
 	case 1: // Set Max Read Chunk Size
 		c.ReadMaxChunkSize = int(binary.BigEndian.Uint32(chunk.payload)) // 4096
+	case 4:
+		c.handleDataMessages(chunk)
+	case 5:
+		// Window ACK Size
 
 	case 20: // AMF0 Command
 		c.handleAmf0Commands(chunk)
-	//
-	//case 18:
-	//	c.handleDataMessages(chunk)
-	//
-	//case 8:
-	//	c.handleAudioData(chunk)
-	//
-	//case 9:
-	//	c.handleVideoData(chunk)
+
+	case 18:
+		c.handleDataMessages(chunk)
+
+	case 8:
+		c.handleAudioData(chunk)
+
+	case 9:
+		c.handleVideoData(chunk)
 
 	default:
 		fmt.Println("UNKNOWN CHUNK RECEIVED", chunk.header.messageType)
@@ -282,9 +353,11 @@ func (c *Connection) handleAmf0Commands(chunk *rtmpChunk) {
 	case "publish":
 		c.onPublish(command, chunk.header.messageStreamID)
 	case "play":
-		//c.onPlay(command, chunk)
+		c.onPlay(command, chunk)
 	case "pause":
 		fmt.Println("Pause")
+	case "getStreamLength":
+		fmt.Println("Get Stream Length")
 	case "FCUnpublish":
 	case "deleteStream":
 		fmt.Println("Delete Stream")
@@ -294,6 +367,7 @@ func (c *Connection) handleAmf0Commands(chunk *rtmpChunk) {
 		fmt.Println("Receive Audio")
 	case "receiveVideo":
 		fmt.Println("Receive Video")
+
 	default:
 		fmt.Println("UNKNOWN AMF COMMAND RECEIVED")
 	}
@@ -437,4 +511,185 @@ func (c *Connection) onPublish(command map[string]interface{}, messageStreamID u
 	c.Writer.Flush()
 
 	c.ConnectionStatus.ConnectionComplete = true
+}
+
+func (c *Connection) handleDataMessages(chunk *rtmpChunk) {
+	command := amf.Decode(chunk.payload)
+	dataObj := command["dataObj"].(map[string]interface{})
+	fmt.Println("Data Message", dataObj)
+	switch command["cmd"] {
+	case "@setDataFrame":
+		// c.AudioSampleRate = dataObj["audiosamplerate"].(float64)
+		// c.AudioChannels = dataObj["audiochannels"].(float64)
+		// c.VideoHeight = dataObj["height"].(float64)
+		// c.VideoWidth = dataObj["width"].(float64)
+		// c.FPS = dataObj["framerate"].(float64)
+
+		fmt.Println("Set Data Frame")
+		c.MetaData = append(c.MetaData, chunk.payload...)
+	}
+}
+
+func (c *Connection) handleAudioData(chunk *rtmpChunk) {
+	chunk.header.timestamp = chunk.clock
+	if !c.GotFirstAudio {
+		c.FirstAudio = append(c.FirstAudio, chunk.payload...)
+	}
+	c.GotFirstAudio = true
+
+}
+
+func (c *Connection) handleVideoData(chunk *rtmpChunk) {
+	chunk.header.timestamp = chunk.clock
+	if !c.GotFirstVideo {
+		c.FirstVideo = append(c.FirstVideo, chunk.payload...)
+		c.GotFirstVideo = true
+		log.Printf("First audio data received for stream key %s", c.StreamKey)
+	}
+
+	//log.Printf("Video Data: %v", chunk.payload)
+}
+
+func (c *Connection) onPlay(command map[string]interface{}, playChunk *rtmpChunk) {
+	fmt.Println(command["streamName"])
+	co := c.Context.get(command["streamName"].(string))
+	if co == nil {
+		fmt.Println("Stream not found")
+		return
+	}
+
+	b := make([]byte, 6)
+	binary.BigEndian.PutUint16(b[:2], 0)
+	binary.BigEndian.PutUint32(b[2:], playChunk.header.messageStreamID)
+	chunk := &rtmpChunk{
+		header: &chunkHeader{
+			fmt:             0,
+			csID:            2,
+			messageType:     4,
+			messageStreamID: 0,
+			timestamp:       0,
+			length:          uint32(6),
+		},
+		clock:    0,
+		delta:    0,
+		capacity: 0,
+		bytes:    0,
+		payload:  b,
+	}
+	for _, ch := range c.create(chunk) {
+		c.Writer.Write(ch)
+	}
+
+	info := flvio.AMFMap{
+		"level":       "status",
+		"code":        "NetStream.Play.Start",
+		"description": "Start live",
+	}
+	amfPayload, _ := amf.Encode("onStatus", 4, nil, info)
+
+	chunk = &rtmpChunk{
+		header: &chunkHeader{
+			fmt:             0,
+			csID:            3,
+			messageType:     20,
+			messageStreamID: playChunk.header.messageStreamID,
+			timestamp:       0,
+			length:          uint32(len(amfPayload)),
+		},
+		clock:    0,
+		delta:    0,
+		capacity: 0,
+		bytes:    0,
+		payload:  amfPayload,
+	}
+	for _, ch := range c.create(chunk) {
+		c.Writer.Write(ch)
+	}
+
+	amfPayload, _ = amf.Encode("|RtmpSampleAccess", false, false)
+	chunk = &rtmpChunk{
+		header: &chunkHeader{
+			fmt:             0,
+			csID:            6,
+			messageType:     20,
+			messageStreamID: 0,
+			timestamp:       0,
+			length:          uint32(len(amfPayload)),
+		},
+		clock:    0,
+		delta:    0,
+		capacity: 0,
+		bytes:    0,
+		payload:  amfPayload,
+	}
+	for _, ch := range c.create(chunk) {
+		c.Writer.Write(ch)
+	}
+
+	c.Writer.Flush()
+
+	chunk = &rtmpChunk{
+		header: &chunkHeader{
+			fmt:             0,
+			csID:            6,
+			messageType:     18,
+			messageStreamID: playChunk.header.messageStreamID,
+			timestamp:       0,
+			length:          uint32(len(co.MetaData)),
+		},
+		clock:    0,
+		delta:    0,
+		capacity: 0,
+		bytes:    0,
+		payload:  co.MetaData,
+	}
+	for _, ch := range c.create(chunk) {
+		c.Writer.Write(ch)
+		fmt.Println(len(ch))
+	}
+	c.Writer.Flush()
+	fmt.Println("Sent Meta Data")
+
+	chunk = &rtmpChunk{
+		header: &chunkHeader{
+			fmt:             0,
+			csID:            4,
+			messageType:     8,
+			messageStreamID: playChunk.header.messageStreamID,
+			timestamp:       0,
+			length:          uint32(len(co.FirstAudio)),
+		},
+		clock:    0,
+		delta:    0,
+		capacity: 0,
+		bytes:    0,
+		payload:  co.FirstAudio,
+	}
+	fmt.Println("Sent Audio Data")
+	for _, ch := range c.create(chunk) {
+		c.Writer.Write(ch)
+	}
+	c.Writer.Flush()
+
+	chunk = &rtmpChunk{
+		header: &chunkHeader{
+			fmt:             0,
+			csID:            4,
+			messageType:     9,
+			messageStreamID: playChunk.header.messageStreamID,
+			timestamp:       0,
+			length:          uint32(len(co.FirstVideo)),
+		},
+		clock:    0,
+		delta:    0,
+		capacity: 0,
+		bytes:    0,
+		payload:  co.FirstVideo,
+	}
+	fmt.Println("Sent Video Data")
+	for _, ch := range c.create(chunk) {
+		c.Writer.Write(ch)
+	}
+
+	c.Writer.Flush()
 }
