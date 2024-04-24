@@ -18,7 +18,6 @@ var rtmpCommandParams = map[string][]string{
 	"play":          []string{"transId", "cmdObj", "streamName", "start", "duration", "reset"},
 }
 
-// DecodedData ..
 type DecodedData struct {
 	remainingData []byte
 	value         interface{}

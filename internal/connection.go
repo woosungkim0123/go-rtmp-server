@@ -34,6 +34,9 @@ type Connection struct {
 	FirstVideo []byte
 	GOP        [][]byte
 
+	Clients        []Channel
+	WaitingClients []Channel
+
 	ConnectionStatus *ConnectionStatus
 }
 
@@ -42,6 +45,12 @@ type ConnectionStatus struct {
 	ConnectionPrepareDone bool
 	ConnectionComplete    bool
 	GotMessage            bool
+}
+
+type Channel struct {
+	ChannelID int64
+	Send      chan []byte
+	Exit      chan bool
 }
 
 func NewConnection(conn net.Conn, ctx *StreamContext) *Connection {
@@ -298,6 +307,15 @@ func (c *Connection) readChunk() (err error) {
 	chunk.bytes += n
 	bytesRead += n
 
+	// client 채널에 데이터를 전송합니다. (여기서는 ffmpeg)
+	if c.ConnectionStatus.ConnectionComplete {
+		temp := make([]byte, bytesRead)
+		copy(temp, c.ReadBuffer[:bytesRead])
+		for _, client := range c.Clients {
+			client.Send <- temp
+		}
+	}
+
 	// 모든 데이터를 읽었을 때
 	if chunk.bytes == int(chunk.header.length) {
 		c.ConnectionStatus.GotMessage = true
@@ -546,7 +564,20 @@ func (c *Connection) handleVideoData(chunk *rtmpChunk) {
 		c.GotFirstVideo = true
 		log.Printf("First audio data received for stream key %s", c.StreamKey)
 	}
-
+	if len(c.WaitingClients) > 0 {
+		frameType := chunk.payload[0] >> 4
+		// codecId := frameType & 0x0f
+		// frameType = (frameType >> 4) & 0x0f
+		if frameType == 1 {
+			for i, client := range c.WaitingClients {
+				for _, ch := range c.create(chunk) {
+					client.Send <- ch
+				}
+				c.Clients = append(c.Clients, client)
+				c.WaitingClients = append(c.WaitingClients[:i], c.WaitingClients[i+1:]...)
+			}
+		}
+	}
 	//log.Printf("Video Data: %v", chunk.payload)
 }
 
@@ -627,6 +658,7 @@ func (c *Connection) onPlay(command map[string]interface{}, playChunk *rtmpChunk
 	}
 
 	c.Writer.Flush()
+	c.ConnectionStatus.ConnectionComplete = true
 
 	chunk = &rtmpChunk{
 		header: &chunkHeader{
@@ -692,4 +724,31 @@ func (c *Connection) onPlay(command map[string]interface{}, playChunk *rtmpChunk
 	}
 
 	c.Writer.Flush()
+
+	// for _, d := range co.GOP {
+	// 	c.Writer.Write(d)
+	// }
+
+	ch := Channel{
+		ChannelID: -1,
+		Send:      make(chan []byte, 100),
+		Exit:      make(chan bool, 5),
+	}
+	co.WaitingClients = append(co.WaitingClients, ch)
+	// co.Clients = append(co.Clients, ch)
+	func(client *Connection) {
+		clientWriter := bufio.NewWriter(c.Conn)
+		for {
+			// fmt.Println("Waiting data to play*********************************************************")
+			select {
+			case chunk := <-ch.Send:
+				clientWriter.Write(chunk)
+			case <-ch.Exit:
+				client.Conn.Close()
+				return
+			}
+			// fmt.Println("___________________________________")
+			clientWriter.Flush()
+		}
+	}(c)
 }
