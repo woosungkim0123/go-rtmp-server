@@ -1,4 +1,4 @@
-package handshake
+package internal
 
 type C0Data struct {
 	Version uint8

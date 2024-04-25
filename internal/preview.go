@@ -10,6 +10,7 @@ import (
 
 var HLSOutputBasePath = "/hls-preview/"
 
+// InitPreviewServer
 func InitPreviewServer(ctx *StreamContext) {
 	for {
 		select {

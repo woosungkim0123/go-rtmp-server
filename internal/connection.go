@@ -23,12 +23,13 @@ type Connection struct {
 	WriteMaxChunkSize int
 	Context           *StreamContext
 
-	Streams       int
-	AppName       string
-	StreamKey     string
-	MetaData      []byte
-	GotFirstAudio bool
-	GotFirstVideo bool
+	HandShakeContext *HandShakeContext
+	Streams          int
+	AppName          string
+	StreamKey        string
+	MetaData         []byte
+	GotFirstAudio    bool
+	GotFirstVideo    bool
 
 	FirstAudio []byte
 	FirstVideo []byte
@@ -61,6 +62,7 @@ func NewConnection(conn net.Conn, ctx *StreamContext) *Connection {
 		ReadBuffer:        make([]byte, 5096), // 일반적인 패킷 크기는 1500이지만 5KB 크기의 버퍼로 설정함으로써 I/O 호출을 줄이고 성능을 향상 시킬 수 있습니다.
 		WriteBuffer:       make([]byte, 5096),
 		csMap:             make(map[uint32]*rtmpChunk),
+		HandShakeContext:  &HandShakeContext{},
 		ReadMaxChunkSize:  128, // 실시간 스트리밍을 위해 작은 청크 크기를 사용하여 지연을 최소화함으로써 빠른 데이터 처리 및 전송을 가능하게 하고, 최적의 사용자 경험을 제공합니다.
 		WriteMaxChunkSize: 4096,
 		Context:           ctx,
@@ -68,6 +70,7 @@ func NewConnection(conn net.Conn, ctx *StreamContext) *Connection {
 	}
 }
 
+// Serve RTMP 연결을 처리합니다. Handshake, Connection Prepare, Connection Complete, Message 처리를 수행합니다.
 func (c *Connection) Serve() (err error) {
 	if err = c.handshake(); err != nil {
 		return
@@ -88,6 +91,7 @@ func (c *Connection) Serve() (err error) {
 
 	return
 }
+
 func (c *Connection) handshake() (err error) {
 	var random [(1 + 1536 + 1536) * 2]byte
 
@@ -189,6 +193,7 @@ func (c *Connection) a() (err error) {
 	}
 }
 
+// readMessage RTMP 메시지를 읽어들입니다.
 func (c *Connection) readMessage() (err error) {
 	c.ConnectionStatus.GotMessage = false
 	for {
@@ -282,8 +287,7 @@ func (c *Connection) readChunk() (err error) {
 	}
 
 	chunk.delta = chunk.header.timestamp  // chunk 간 시간 간격
-	chunk.clock += chunk.header.timestamp // stream 내에서 현재까지의 총 진행 시간
-	//log.Printf("delta timestamp: %d, clock: %d", chunk.delta, chunk.clock)
+	chunk.clock += chunk.header.timestamp // stream 내에서 현재까지의 총 진행 시간\
 
 	// 첫 번째 데이터를 읽을 때 payload를 초기화합니다.
 	if chunk.bytes == 0 {
@@ -294,11 +298,9 @@ func (c *Connection) readChunk() (err error) {
 	// 총 읽어야할 데이터량 - 현재까지 읽은 데이터량
 	// 만약 읽어야할 데이터량이 한번에 읽을 수 있는 최대 읽기 크기보다 크다면 최대 읽기 크기로 설정합니다.
 	size := int(chunk.header.length) - chunk.bytes
-	//log.Printf("chunk length: %d, bytes: %d, size: %d", chunk.header.length, chunk.bytes, size)
 	if size > c.ReadMaxChunkSize {
 		size = c.ReadMaxChunkSize
 	}
-	//log.Printf("size: %d", size)
 
 	var n int
 	n, err = io.ReadFull(c.Reader, c.ReadBuffer[bytesRead:bytesRead+size])
@@ -307,7 +309,7 @@ func (c *Connection) readChunk() (err error) {
 	chunk.bytes += n
 	bytesRead += n
 
-	// client 채널에 데이터를 전송합니다. (여기서는 ffmpeg)
+	// client 채널에 데이터를 전송합니다. (여기서는 ffmpeg에게 전송하여 HLS로 변환합니다.)
 	if c.ConnectionStatus.ConnectionComplete {
 		temp := make([]byte, bytesRead)
 		copy(temp, c.ReadBuffer[:bytesRead])
@@ -329,7 +331,6 @@ func (c *Connection) readChunk() (err error) {
 
 func (c *Connection) handleChunk(chunk *rtmpChunk) {
 	switch chunk.header.messageType {
-
 	case 1: // Set Max Read Chunk Size
 		c.ReadMaxChunkSize = int(binary.BigEndian.Uint32(chunk.payload)) // 4096
 	case 4:
@@ -350,9 +351,8 @@ func (c *Connection) handleChunk(chunk *rtmpChunk) {
 		c.handleVideoData(chunk)
 
 	default:
-		fmt.Println("UNKNOWN CHUNK RECEIVED", chunk.header.messageType)
-		fmt.Println(chunk.header.fmt, chunk.header.csID, chunk.header.hasExtendedTimestamp, chunk.header.length, chunk.header.messageStreamID, chunk.header.messageType, chunk.header.timestamp)
-		// panic(chunk.header.messageStreamID)
+		log.Printf("UNKNOWN CHUNK RECEIVED %d", chunk.header.messageType)
+		log.Println(chunk.header.fmt, chunk.header.csID, chunk.header.hasExtendedTimestamp, chunk.header.length, chunk.header.messageStreamID, chunk.header.messageType, chunk.header.timestamp)
 	}
 }
 
@@ -372,22 +372,9 @@ func (c *Connection) handleAmf0Commands(chunk *rtmpChunk) {
 		c.onPublish(command, chunk.header.messageStreamID)
 	case "play":
 		c.onPlay(command, chunk)
-	case "pause":
-		fmt.Println("Pause")
-	case "getStreamLength":
-		fmt.Println("Get Stream Length")
-	case "FCUnpublish":
-	case "deleteStream":
-		fmt.Println("Delete Stream")
-	case "closeStream":
-		fmt.Println("Close Stream")
-	case "receiveAudio":
-		fmt.Println("Receive Audio")
-	case "receiveVideo":
-		fmt.Println("Receive Video")
 
 	default:
-		fmt.Println("UNKNOWN AMF COMMAND RECEIVED")
+		log.Println("Unknown AMF Command Received")
 	}
 }
 
@@ -484,7 +471,7 @@ func (c *Connection) onCreateStream(command map[string]interface{}) {
 }
 
 func (c *Connection) onPublish(command map[string]interface{}, messageStreamID uint32) {
-	fmt.Println("On Publish", command)
+	log.Printf("on Publish Command: %v", command)
 	cmd := "onStatus"
 	transID := 0
 	cmdObj := interface{}(nil)
@@ -515,12 +502,7 @@ func (c *Connection) onPublish(command map[string]interface{}, messageStreamID u
 	c.Context.set(command["streamName"].(string), c) // 서버세션에 저장
 	c.StreamKey = command["streamName"].(string)     // 스트림키 저장
 
-	// Get User 요청 - RPC 사용
-	// 응답을 바탕으로 redis
-
-	// 작은 서비스는 여기서 유저들에게 연결하여 바로전송하는방식을 택함
-	// redis에 유저ID와 StreamID 저장 (예: redis 사용)
-
+	// 채널을 통해 데이터를 전송하여 FFMPEG를 CMD 형태로 실행합니다. (HLS로 변환하기 위함)
 	c.Context.Preview <- c.StreamKey
 
 	for _, ch := range c.create(chunk) {
@@ -531,32 +513,28 @@ func (c *Connection) onPublish(command map[string]interface{}, messageStreamID u
 	c.ConnectionStatus.ConnectionComplete = true
 }
 
+// handleDataMessages 데이터 메시지를 처리합니다.
 func (c *Connection) handleDataMessages(chunk *rtmpChunk) {
 	command := amf.Decode(chunk.payload)
 	dataObj := command["dataObj"].(map[string]interface{})
-	fmt.Println("Data Message", dataObj)
+	log.Printf("Data Object: %v", dataObj)
 	switch command["cmd"] {
 	case "@setDataFrame":
-		// c.AudioSampleRate = dataObj["audiosamplerate"].(float64)
-		// c.AudioChannels = dataObj["audiochannels"].(float64)
-		// c.VideoHeight = dataObj["height"].(float64)
-		// c.VideoWidth = dataObj["width"].(float64)
-		// c.FPS = dataObj["framerate"].(float64)
-
-		fmt.Println("Set Data Frame")
+		log.Println("Set Data Frame")
 		c.MetaData = append(c.MetaData, chunk.payload...)
 	}
 }
 
+// handleAudioData 오디오 데이터를 처리합니다.
 func (c *Connection) handleAudioData(chunk *rtmpChunk) {
 	chunk.header.timestamp = chunk.clock
 	if !c.GotFirstAudio {
 		c.FirstAudio = append(c.FirstAudio, chunk.payload...)
 	}
 	c.GotFirstAudio = true
-
 }
 
+// handleVideoData 비디오 데이터를 처리합니다.
 func (c *Connection) handleVideoData(chunk *rtmpChunk) {
 	chunk.header.timestamp = chunk.clock
 	if !c.GotFirstVideo {
@@ -564,10 +542,10 @@ func (c *Connection) handleVideoData(chunk *rtmpChunk) {
 		c.GotFirstVideo = true
 		log.Printf("First audio data received for stream key %s", c.StreamKey)
 	}
+
+	// 기다리는 클라이언트가 있을 경우, 클라이언트에게 데이터를 전송합니다. (ffmpeg에게 전송하여 HLS로 변환합니다.)
 	if len(c.WaitingClients) > 0 {
 		frameType := chunk.payload[0] >> 4
-		// codecId := frameType & 0x0f
-		// frameType = (frameType >> 4) & 0x0f
 		if frameType == 1 {
 			for i, client := range c.WaitingClients {
 				for _, ch := range c.create(chunk) {
@@ -578,7 +556,6 @@ func (c *Connection) handleVideoData(chunk *rtmpChunk) {
 			}
 		}
 	}
-	//log.Printf("Video Data: %v", chunk.payload)
 }
 
 func (c *Connection) onPlay(command map[string]interface{}, playChunk *rtmpChunk) {
